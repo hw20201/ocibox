@@ -268,34 +268,20 @@ public class AccountYamlService {
     }
 
     /**
-     * 保存管理员明文凭据至同目录 .admin-password (原子 600 权限)，确保 root 终端运维指令 (oci / update.sh) 能正常展示凭据
+     * 安全修复：历史版本曾把管理员明文密码写到同目录 .admin-password。
+     * 新版本永不再写该文件；本方法只用于启动时清理历史遗留文件。
      */
-    public void saveRememberedAdminPassword(String plaintext) {
-        if (plaintext == null || plaintext.isBlank() || PasswordHasher.isHashed(plaintext)) return;
+    public void deleteRememberedAdminPassword() {
         synchronized (YAML_FILE_LOCK) {
             try {
                 File ymlFile = getConfigFile();
                 if (ymlFile == null || ymlFile.getParentFile() == null) return;
                 Path path = ymlFile.getParentFile().toPath().resolve(".admin-password");
-                byte[] bytes = (plaintext.trim() + "\n").getBytes(StandardCharsets.UTF_8);
-                try {
-                    java.nio.file.attribute.FileAttribute<Set<PosixFilePermission>> attr =
-                            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"));
-                    try (java.nio.channels.SeekableByteChannel channel = Files.newByteChannel(
-                            path,
-                            java.util.EnumSet.of(
-                                    java.nio.file.StandardOpenOption.CREATE,
-                                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
-                                    java.nio.file.StandardOpenOption.WRITE),
-                            attr)) {
-                        channel.write(java.nio.ByteBuffer.wrap(bytes));
-                    }
-                } catch (UnsupportedOperationException e) {
-                    Files.write(path, bytes);
+                if (Files.deleteIfExists(path)) {
+                    System.out.println("🧹 已清理历史遗留的明文密码文件 .admin-password（旧明文密码无法找回，请用 'oci password' 重置）。");
                 }
-                enforceStrictFilePermissions(path);
             } catch (Exception e) {
-                System.err.println("保存管理员凭据提示: " + e.getMessage());
+                System.err.println("清理历史明文密码文件失败: " + e.getMessage());
             }
         }
     }

@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 @Entity
 @Table(name = "creation_tasks")
@@ -26,7 +27,13 @@ public class CreationTaskRecord {
     private boolean ipv6;
     private boolean autoStop;
     private String tgId;
+    // 安全修复：实例 root 密码与 SSH 密钥只保留在内存中，绝不写入 SQLite。
+    // 服务重启后含凭据的任务无法恢复（见 CreationTaskService.resumeTasksOnStartup）。
+    @Transient
     private String password;
+    // 是否曾带有 root 密码 / SSH 密钥（持久化）。重启恢复时据此安全失败，而不是静默地
+    // 用无凭据配置去抢机。
+    private boolean hadCredentials;
     private String status;
     private long startTime;
     private int attemptCount;
@@ -37,7 +44,7 @@ public class CreationTaskRecord {
     // 🌟 修复：新增系统与公钥持久化字段，防止重启后由于变 null 导致线程崩溃
     private String osName;
     private String osVersion;
-    @Column(columnDefinition = "TEXT")
+    @Transient
     private String sshKey;
 
     public String getId() { return id; }
@@ -90,6 +97,9 @@ public class CreationTaskRecord {
 
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password; }
+
+    public boolean isHadCredentials() { return hadCredentials; }
+    public void setHadCredentials(boolean hadCredentials) { this.hadCredentials = hadCredentials; }
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }

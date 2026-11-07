@@ -103,6 +103,15 @@ public class CreationTaskService {
             }
             
             for (CreationTaskRecord task : runningTasks) {
+                // 安全修复：含 root 密码 / SSH 密钥的任务，凭据只在内存里，重启后已丢失。
+                // 绝不能静默地用无凭据配置去抢机（会开出无法登录的机器），直接标记失败并提示重新创建。
+                if (task.isHadCredentials()) {
+                    System.out.println("⏭️ 跳过恢复任务: 账号 " + task.getAccount() + "，任务 ID: " + task.getId() + "（含 root 密码/SSH 密钥，凭据不再持久化存储，重启后无法继续，请重新创建）");
+                    task.setStatus("FAILED");
+                    appendLog(task.getId(), "❌ [" + getNowTime() + "] 系统重启：该任务含 root 密码 / SSH 密钥，凭据仅保留在内存中，重启后已无法恢复，任务已停止。请重新创建任务。\n");
+                    try { taskRepository.save(task); } catch (Exception ignored) {}
+                    continue;
+                }
                 System.out.println("▶️ 恢复任务: 账号 " + task.getAccount() + "，任务 ID: " + task.getId());
                 appendLog(task.getId(), "🔄 [" + getNowTime() + "] 系统重启，已自动恢复抢占任务...\n");
                 startTaskInternal(task);
@@ -137,12 +146,16 @@ public class CreationTaskService {
         record.setDisk(disk);
         record.setInstances(count > 0 ? count : 1);
         record.setSuccessCount(0);
-        record.setRetryInterval(interval);
+        // 抢机重试间隔下限 10 秒：interval=1 会以约 1 次/秒的速度 hammer OCI LaunchInstance 接口。
+        record.setRetryInterval(interval <= 0 ? 30 : Math.max(interval, 10));
         record.setPublicIp(ipv4);
         record.setIpv6(ipv6);
         String trimmedPwd = (rootPwd != null) ? rootPwd.trim() : "";
         boolean hasTaskPwd = rootLogin && !trimmedPwd.isEmpty() && !"null".equalsIgnoreCase(trimmedPwd);
+        boolean hasSshKey = sshKey != null && !sshKey.trim().isEmpty() && !"null".equalsIgnoreCase(sshKey.trim());
+        // 凭据只保留在内存（@Transient），不写入数据库；hadCredentials 持久化，供重启恢复时安全失败。
         record.setPassword(hasTaskPwd ? trimmedPwd : null);
+        record.setHadCredentials(hasTaskPwd || hasSshKey);
         record.setAutoStop(hasTaskPwd);
         
         record.setStatus("RUNNING");
@@ -158,7 +171,7 @@ public class CreationTaskService {
         appendLog(taskId, "🚀 [" + getNowTime() + "] 任务已持久化并加入执行队列...\n");
         startTaskInternal(record);
         
-        return "✅ 抢机任务已持久化并开始运行，服务器重启也不会丢失。";
+        return "✅ 抢机任务已开始运行。注意：root 密码 / SSH 密钥仅保留在内存中，服务重启后含凭据的任务将自动停止，需重新创建。";
     }
 
     private synchronized void startTaskInternal(CreationTaskRecord task) {
@@ -301,8 +314,7 @@ public class CreationTaskService {
                                     shapeDescription += " (AMD Micro)";
                                 }
 
-                                // 🌟 修复：接入原生 HTML <tg-spoiler> 标签与 HTML 实体转义
-                                String safePwd = (effectivePwd != null) ? effectivePwd.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
+                                // 安全修复：root 密码绝不发往 Telegram（你创建时自己输入的密码，只有你知道）。
                                 String safeAcc = (task.getAccount() != null) ? task.getAccount().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
                                 String safeIp = (ipAddress != null) ? ipAddress.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
                                 String safeShape = (shapeDescription != null) ? shapeDescription.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
@@ -310,10 +322,9 @@ public class CreationTaskService {
 
                                 String pwdInfo;
                                 if (taskHasPwd && safeSshKey != null) {
-                                    pwdInfo = "🔑 登录方式: 密码 + SSH 密钥双重登录\n" +
-                                              "🔑 Root 密码: <tg-spoiler><code>" + safePwd + "</code></tg-spoiler>";
+                                    pwdInfo = "🔑 登录方式: 密码 + SSH 密钥双重登录（密码仅由你在创建时输入，不经 Telegram 发送）";
                                 } else if (taskHasPwd) {
-                                    pwdInfo = "🔑 Root 密码: <tg-spoiler><code>" + safePwd + "</code></tg-spoiler>";
+                                    pwdInfo = "🔑 登录方式: 密码登录（密码仅由你在创建时输入，不经 Telegram 发送）";
                                 } else {
                                     pwdInfo = "🔑 登录方式: SSH 密钥安全登录 (已注入)";
                                 }

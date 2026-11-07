@@ -65,6 +65,8 @@ public class AdminAuthService {
                 upgradeDatabasePassword();
             }
             upgradeYamlPassword();
+            // 升级后顺手清理历史版本留下的明文密码文件（若存在），只删文件，不影响登录。
+            deleteRememberedAdminPassword();
         } catch (Exception e) {
             System.err.println("管理员密码哈希升级失败: " + e.getMessage());
         }
@@ -351,13 +353,21 @@ public class AdminAuthService {
         systemConfigRepo.save(opt.get());
     }
 
+    /** 删除历史版本遗留的明文管理员密码文件（<config-dir>/.admin-password），删不掉也不影响启动。 */
+    private void deleteRememberedAdminPassword() {
+        if (accountYamlService == null) return;
+        try {
+            accountYamlService.deleteRememberedAdminPassword();
+        } catch (Exception ignored) {}
+    }
+
     private void upgradeYamlPassword() {
         if (adminPassword == null || adminPassword.isBlank()) return;
         String current = adminPassword.trim();
         if (current.matches("\\$\\{[^}]*}") || PasswordHasher.isHashed(current)) return;
         if (accountYamlService == null) return;
-        // 🌟 哈希化写入 application.yml 之前，在同目录安全保留 .admin-password (chmod 600) 供 root 终端运维命令 (oci/update.sh) 查看
-        accountYamlService.saveRememberedAdminPassword(current);
+        // 安全修复：明文密码绝不另存副本，直接哈希写入 application.yml。
+        // 旧明文密码无法找回，只能通过 'oci password' 重置为新密码。
         String hashed = PasswordHasher.hash(current);
         if (accountYamlService.replacePlaintextAdminPassword(current, hashed)) {
             this.adminPassword = hashed;

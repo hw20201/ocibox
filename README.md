@@ -166,7 +166,8 @@ chmod 700 /root/ocibox/keys /root/ocibox/data
 ```yaml
 server:
   port: 5000
-  address: 0.0.0.0
+  # 只监听本机；远程访问请走 Nginx 反向代理 + TLS，不要直接对外暴露。
+  address: 127.0.0.1
 
 spring:
   datasource:

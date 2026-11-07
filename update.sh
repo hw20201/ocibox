@@ -140,22 +140,30 @@ else
         rm -f "${TMP_JAR}" 2>/dev/null || true
         exit 1
     fi
-    if command -v sha256sum >/dev/null 2>&1; then
-        CHECKSUMS_URL="https://github.com/GeniusZeroTwo/ocibox/releases/download/latest/checksums.txt"
-        EXPECTED_SHA=""
-        if curl -fsSL --connect-timeout 8 "${CHECKSUMS_URL}" -o "${TMP_JAR}.sha256" 2>/dev/null || curl -fsSL --connect-timeout 5 "${USED_URL}.sha256" -o "${TMP_JAR}.sha256" 2>/dev/null; then
-            EXPECTED_SHA=$(grep -iE 'ocibox\.jar|oci-personal\.jar' "${TMP_JAR}.sha256" 2>/dev/null | head -n 1 | awk '{print $1}' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            [[ -z "${EXPECTED_SHA}" ]] && EXPECTED_SHA=$(awk '{print $1}' "${TMP_JAR}.sha256" | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            rm -f "${TMP_JAR}.sha256" 2>/dev/null || true
-        fi
-        ACTUAL_SHA=$(sha256sum "${TMP_JAR}" | awk '{print $1}' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-        if [[ -n "${EXPECTED_SHA}" && "${#EXPECTED_SHA}" -eq 64 ]]; then
-            if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
-                echo -e "${RED}❌ 核心程序包 SHA-256 校验值不匹配！已拒绝更新并保留原程序。${PLAIN}"
-                rm -f "${TMP_JAR}" 2>/dev/null || true
-                exit 1
-            fi
-        fi
+    # 🔒 SHA-256 校验失败即中止 (fail-closed)：拿不到官方 64 位十六进制摘要、或摘要与下载包不符，
+    # 一律拒绝更新并保留原程序，绝不装未经校验的包。只认与本次实际下载文件同名的那一行摘要。
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        echo -e "${RED}❌ 缺少 sha256sum 工具，无法校验核心程序包，已拒绝更新并保留原程序。${PLAIN}"
+        rm -f "${TMP_JAR}" 2>/dev/null || true
+        exit 1
+    fi
+    CHECKSUMS_URL="https://github.com/GeniusZeroTwo/ocibox/releases/download/latest/checksums.txt"
+    USED_FILE="$(basename "${USED_URL}")"
+    EXPECTED_SHA=""
+    if curl -fsSL --connect-timeout 8 "${CHECKSUMS_URL}" -o "${TMP_JAR}.sha256" 2>/dev/null; then
+        EXPECTED_SHA=$(grep -E "^[0-9a-fA-F]{64}[[:space:]]+\*?${USED_FILE}$" "${TMP_JAR}.sha256" 2>/dev/null | head -n 1 | awk '{print $1}' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        rm -f "${TMP_JAR}.sha256" 2>/dev/null || true
+    fi
+    if [[ -z "${EXPECTED_SHA}" || "${#EXPECTED_SHA}" -ne 64 || ! "${EXPECTED_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo -e "${RED}❌ 未能获取到 ${USED_FILE} 的官方 SHA-256 校验摘要，已拒绝更新并保留原程序。${PLAIN}"
+        rm -f "${TMP_JAR}" 2>/dev/null || true
+        exit 1
+    fi
+    ACTUAL_SHA=$(sha256sum "${TMP_JAR}" | awk '{print $1}' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
+        echo -e "${RED}❌ 核心程序包 SHA-256 校验值不匹配！已拒绝更新并保留原程序。${PLAIN}"
+        rm -f "${TMP_JAR}" 2>/dev/null || true
+        exit 1
     fi
     mv -f "${TMP_JAR}" "${INSTALL_DIR}/app.jar"
     echo -e "✅ 已成功下载并更新核心程序包！"
@@ -279,7 +287,9 @@ ocibox_update() {
     if [[ -f "${INSTALL_DIR}/update.sh" ]]; then
         bash "${INSTALL_DIR}/update.sh" "$@"
     else
-        bash <(curl -fsSL https://raw.githubusercontent.com/GeniusZeroTwo/ocibox/main/update.sh) "$@"
+        echo -e "${RED}❌ 本地更新脚本 ${INSTALL_DIR}/update.sh 缺失，已拒绝更新。${PLAIN}"
+        echo -e "${YELLOW}为安全起见，OCIBox 永不从网络拉取并执行更新脚本。请重新运行 install.sh 修复安装后再更新。${PLAIN}"
+        return 1
     fi
 }
 
@@ -304,35 +314,8 @@ read_admin_password() {
     printf '%s' "$val"
 }
 
-save_admin_password_plain() {
-    local pwd="$1"
-    local conf="$2"
-    local file
-    if [[ -z "$pwd" || -z "$conf" || "$pwd" == pbkdf2sha256\$* || "$pwd" == \$\{* ]]; then
-        return 0
-    fi
-    file="$(dirname "$conf")/.admin-password"
-    (umask 077 && printf '%s\n' "$pwd" > "$file")
-    chmod 600 "$file" 2>/dev/null || true
-}
-
-resolve_admin_password() {
-    local pwd="$1"
-    local conf="$2"
-    local plain_file plain
-    if [[ "$pwd" == pbkdf2sha256\$* && -n "$conf" ]]; then
-        plain_file="$(dirname "$conf")/.admin-password"
-        if [[ -f "$plain_file" ]]; then
-            IFS= read -r plain < "$plain_file" || true
-            plain="${plain//$'\r'/}"
-            if [[ -n "$plain" && "$plain" != pbkdf2sha256\$* ]]; then
-                printf '%s' "$plain"
-                return
-            fi
-        fi
-    fi
-    printf '%s' "$pwd"
-}
+# 管理员密码绝不明文写入磁盘：哈希升级后 application.yml 里只有 PBKDF2 哈希，
+# 旧明文密码无法找回，只能通过 'oci password' 重置为新密码。
 
 show_admin_password() {
     local pwd="$1"
@@ -355,7 +338,7 @@ ocibox_info() {
     fi
     local base_dir=$(dirname "$conf")
     local user=$(grep -E '^[[:space:]]*admin-username:' "$conf" | head -n 1 | sed -E 's/^[[:space:]]*admin-username:[[:space:]]*"?(.*)"?[[:space:]]*$/\1/' | sed 's/"//g')
-    local pwd=$(resolve_admin_password "$(read_admin_password "$conf")" "$conf")
+    local pwd=$(read_admin_password "$conf")
     local bot=$(grep -E '^[[:space:]]*bot-token:' "$conf" | head -n 1 | sed -E 's/^[[:space:]]*bot-token:[[:space:]]*"?(.*)"?[[:space:]]*$/\1/' | sed 's/"//g')
     local admin_id=$(grep -E '^[[:space:]]*admin-id:' "$conf" | head -n 1 | sed -E 's/^[[:space:]]*admin-id:[[:space:]]*"?(.*)"?[[:space:]]*$/\1/' | sed 's/"//g')
     local port=$(grep -E '^[[:space:]]*port:' "$conf" | head -n 1 | sed -E 's/^[[:space:]]*port:[[:space:]]*"?(.*)"?[[:space:]]*$/\1/' | sed 's/"//g')
@@ -541,14 +524,14 @@ ocibox_cert() {
                     echo -e "${YELLOW}正在解除域名绑定并恢复 IP:端口 直连模式...${PLAIN}"
                     rm -f /etc/nginx/conf.d/ocibox.conf /etc/nginx/sites-enabled/ocibox.conf 2>/dev/null || true
                     nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null || true
-                    sed -i.bak -E 's/^[[:space:]]*address:[[:space:]].*$/  address: 0.0.0.0/' "$conf" 2>/dev/null || true
+                    sed -i.bak -E 's/^[[:space:]]*address:[[:space:]].*$/  address: 127.0.0.1/' "$conf" 2>/dev/null || true
                     sed -i.bak -E 's/^[[:space:]]*trust-forwarded-for:[[:space:]].*$/  trust-forwarded-for: false/' "$conf" 2>/dev/null || true
                     rm -f "${conf}.bak" 2>/dev/null || true
                     echo 'BIND_DOMAIN=false' > "$domain_conf"
                     echo 'DOMAIN=""' >> "$domain_conf"
                     local svc=$(get_service_name)
                     systemctl restart "$svc" 2>/dev/null || true
-                    echo -e "${GREEN}✅ 已成功解除域名绑定！管理后台已恢复直接访问: http://${server_ip}:${port}${PLAIN}"
+                    echo -e "${GREEN}✅ 已成功解除域名绑定！管理后台现仅监听本机 (127.0.0.1:${port})，远程访问请用 SSH 端口转发或重新绑定域名。${PLAIN}"
                     return 0
                     ;;
                 *) return 0 ;;
@@ -724,8 +707,7 @@ ocibox_password() {
     rm -f "${conf}.bak" 2>/dev/null || true
     chmod 600 "$conf" 2>/dev/null || true
 
-    # 安全留存副本至 .admin-password (chmod 600，仅 root 可读)
-    save_admin_password_plain "$new_pwd" "$conf"
+    # 新密码只写入 application.yml（服务启动时会自动哈希升级），绝不明文另存副本。
 
     # 重启服务
     systemctl restart "$svc" >/dev/null 2>&1 || true

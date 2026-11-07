@@ -1,5 +1,10 @@
 server:
   port: 5000
+  error:
+    # 默认 /error 路径绝不向客户端泄露堆栈、异常消息或绑定错误详情。
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
   # 只监听本机。对外发布请走自己的反向代理，不要把管理面直接绑到所有网卡。
   address: ${SERVER_ADDRESS:127.0.0.1}
   servlet:

@@ -328,24 +328,24 @@ public class AdminInstanceController {
             
             startReinstallMonitor(ocid, account, defaultInstanceName, safeRootPwd, oldBootVolumeId);
             
-            return Map.of("success", true, "generatedPwd", (hasPwd ? safeRootPwd : "（通过 SSH 密钥登录）"));
+            // 安全修复：重装密码是你提交的，不再从接口回显（避免密码在响应/日志里多一份副本）。
+            return Map.of("success", true, "message", hasPwd ? "系统重装已派发，请使用你提交的 Root 密码登录" : "系统重装已派发，请使用 SSH 密钥登录");
         } catch (Exception e) {
             return com.oci.ocimanager.controller.ApiErrors.fail("系统重装失败", e);
         }
     }
 
     private void startReinstallMonitor(String ocid, String account, String instanceName, String rootPwd, String oldBootVolumeId) {
-        String safePwd = (rootPwd != null) ? rootPwd.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
         String safeInstance = (instanceName != null) ? instanceName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
         String safeAcc = (account != null) ? account.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
 
-        String pwdInfo = (rootPwd != null && !rootPwd.isEmpty()) ? "🔑 临时密码: <tg-spoiler><code>" + safePwd + "</code></tg-spoiler>" : "🔑 登录方式: SSH 密钥";
+        // 安全修复：root 密码绝不发往 Telegram（密码是你重装时提交的，只有你知道）。
+        String pwdInfo = (rootPwd != null && !rootPwd.isEmpty()) ? "🔑 登录方式: 密码登录（密码仅由你在重装时提交，不经 Telegram 发送）" : "🔑 登录方式: SSH 密钥";
         notificationService.send("系统重装任务开始", "⏳ <b>系统重装任务开始</b>\n\n实例: <code>" + safeInstance + "</code>\n账号: <code>" + safeAcc + "</code>\n" + pwdInfo + "\n\n正在替换引导卷，将在后台自动跟进开机状态...", "INFO", "INSTANCE");
         scheduleMonitorTask(ocid, account, instanceName, rootPwd, oldBootVolumeId, 0);
     }
 
     private void scheduleMonitorTask(String ocid, String account, String instanceName, String rootPwd, String oldBootVolumeId, int attempt) {
-        String safePwd = (rootPwd != null) ? rootPwd.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
         String safeInstance = (instanceName != null) ? instanceName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") : "";
 
         if (attempt >= 40) { 
@@ -364,7 +364,8 @@ public class AdminInstanceController {
                     }
                     String safeIp = newIp.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
 
-                    String successPwdInfo = (rootPwd != null && !rootPwd.isEmpty()) ? "🔑 Root 密码: <tg-spoiler><code>" + safePwd + "</code></tg-spoiler>" : "🔑 登录方式: SSH 密钥";
+                    // 安全修复：root 密码绝不发往 Telegram。
+                    String successPwdInfo = (rootPwd != null && !rootPwd.isEmpty()) ? "🔑 登录方式: 密码登录（密码是你重装时提交的那个）" : "🔑 登录方式: SSH 密钥";
                     
                     String volumeCleanupInfo = "";
                     if (oldBootVolumeId != null && !oldBootVolumeId.isEmpty()) {

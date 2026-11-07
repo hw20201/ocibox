@@ -38,7 +38,7 @@ public class SqliteSchemaAutoMigrator implements BeanPostProcessor {
                 {"instance_name", "TEXT"},
                 {"os_name", "TEXT"},
                 {"os_version", "TEXT"},
-                {"ssh_key", "TEXT"},
+                {"had_credentials", "INTEGER DEFAULT 0"},
                 {"attempt_count", "INTEGER DEFAULT 0"},
                 {"start_time", "BIGINT DEFAULT 0"},
                 {"instances", "INTEGER DEFAULT 1"},
@@ -47,7 +47,6 @@ public class SqliteSchemaAutoMigrator implements BeanPostProcessor {
                 {"ipv6", "INTEGER DEFAULT 0"},
                 {"auto_stop", "INTEGER DEFAULT 0"},
                 {"tg_id", "TEXT"},
-                {"password", "TEXT"},
                 {"status", "TEXT"},
                 {"log", "TEXT"},
                 {"ocpus", "REAL DEFAULT 0"},
@@ -58,6 +57,14 @@ public class SqliteSchemaAutoMigrator implements BeanPostProcessor {
                 {"region", "TEXT"},
                 {"account", "TEXT"}
             });
+
+            // 1b. 安全修复：历史版本曾把实例 root 密码 / SSH 密钥明文存在 creation_tasks 表里。
+            // 新版本不再持久化这些凭据：先把含凭据的旧任务标记为 had_credentials=1（重启恢复时会
+            // 安全失败并提示重新创建），再清空这两列。幂等；新库没有这两列时会静默跳过。
+            try {
+                stmt.execute("UPDATE creation_tasks SET had_credentials = 1 WHERE (password IS NOT NULL AND password != '') OR (ssh_key IS NOT NULL AND ssh_key != '')");
+                stmt.execute("UPDATE creation_tasks SET password = NULL, ssh_key = NULL");
+            } catch (Exception ignored) {}
 
             // 2. 检查并补全 traffic_limit 表
             checkAndAddColumns(stmt, "traffic_limit", new String[][]{

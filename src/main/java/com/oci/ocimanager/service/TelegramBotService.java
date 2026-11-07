@@ -431,6 +431,15 @@ public class TelegramBotService implements LongPollingSingleThreadUpdateConsumer
                 answerCallback(queryId, "❌ 会话超时", true);
                 return;
             }
+            // 破坏性操作需二次确认：先弹确认页，点确认才执行。
+            handleChangeIpConfirm(chatId, messageId, queryId, shortId, ocid);
+        } else if (data.startsWith("confirm_ip_")) {
+            String shortId = data.replace("confirm_ip_", "");
+            String ocid = redisTemplate.opsForValue().get("oci:tg_inst:" + shortId);
+            if (ocid == null) {
+                answerCallback(queryId, "❌ 会话超时", true);
+                return;
+            }
             handleChangeIp(chatId, messageId, queryId, shortId, ocid);
         } else if (data.startsWith("start_")) {
             String shortId = data.replace("start_", "");
@@ -439,9 +448,17 @@ public class TelegramBotService implements LongPollingSingleThreadUpdateConsumer
         } else if (data.startsWith("stop_")) {
             String shortId = data.replace("stop_", "");
             String ocid = redisTemplate.opsForValue().get("oci:tg_inst:" + shortId);
+            if (ocid != null) handlePowerConfirm(chatId, messageId, queryId, shortId, ocid, "STOP");
+        } else if (data.startsWith("confirm_stop_")) {
+            String shortId = data.replace("confirm_stop_", "");
+            String ocid = redisTemplate.opsForValue().get("oci:tg_inst:" + shortId);
             if (ocid != null) handlePowerAction(chatId, messageId, queryId, shortId, ocid, "STOP");
         } else if (data.startsWith("reboot_")) {
             String shortId = data.replace("reboot_", "");
+            String ocid = redisTemplate.opsForValue().get("oci:tg_inst:" + shortId);
+            if (ocid != null) handlePowerConfirm(chatId, messageId, queryId, shortId, ocid, "RESET");
+        } else if (data.startsWith("confirm_reboot_")) {
+            String shortId = data.replace("confirm_reboot_", "");
             String ocid = redisTemplate.opsForValue().get("oci:tg_inst:" + shortId);
             if (ocid != null) handlePowerAction(chatId, messageId, queryId, shortId, ocid, "RESET");
         } else if (data.startsWith("reinst_")) {
@@ -453,6 +470,30 @@ public class TelegramBotService implements LongPollingSingleThreadUpdateConsumer
         } else if (data.startsWith("do_reinst_")) {
             handleReinstallExecute(chatId, messageId, queryId, data);
         }
+    }
+
+    // 破坏性操作二次确认：换 IP 会释放旧 IP，先让管理员点一次确认，误触可取消。
+    private void handleChangeIpConfirm(long chatId, int messageId, String queryId, String shortId, String ocid) {
+        answerCallback(queryId, "请确认操作", false);
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        InlineKeyboardRow r = new InlineKeyboardRow();
+        r.add(InlineKeyboardButton.builder().text("✅ 确认更换 IP").callbackData("confirm_ip_" + shortId).build());
+        r.add(InlineKeyboardButton.builder().text("🔙 取消").callbackData("inst_" + shortId).build());
+        rows.add(r);
+        updateMessage(chatId, messageId, "⚠️ <b>请确认操作</b>\n\n确定要更换该实例的公网 IP 吗？旧 IP 会被释放，正在用的 SSH 连接会断开。", InlineKeyboardMarkup.builder().keyboard(rows).build());
+    }
+
+    // 破坏性操作二次确认：关机 / 重启先弹确认页，误触可取消。开机（START）不是破坏性操作，不拦截。
+    private void handlePowerConfirm(long chatId, int messageId, String queryId, String shortId, String ocid, String action) {
+        String actionName = "STOP".equals(action) ? "停止关机" : "重启";
+        String confirmData = "STOP".equals(action) ? "confirm_stop_" + shortId : "confirm_reboot_" + shortId;
+        answerCallback(queryId, "请确认操作", false);
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        InlineKeyboardRow r = new InlineKeyboardRow();
+        r.add(InlineKeyboardButton.builder().text("✅ 确认" + actionName).callbackData(confirmData).build());
+        r.add(InlineKeyboardButton.builder().text("🔙 取消").callbackData("inst_" + shortId).build());
+        rows.add(r);
+        updateMessage(chatId, messageId, "⚠️ <b>请确认操作</b>\n\n确定要对该实例执行「" + actionName + "」吗？此操作会立即生效。", InlineKeyboardMarkup.builder().keyboard(rows).build());
     }
 
     private void handleChangeIp(long chatId, int messageId, String queryId, String shortId, String ocid) {
@@ -642,9 +683,12 @@ public class TelegramBotService implements LongPollingSingleThreadUpdateConsumer
 
                 boolean ok = ociCloudService.reinstallInstance(ocid, accName, (info != null ? info.get("name") : null), osName, osVersion, null, null, randomPwd);
                 if (ok) {
+                    // 注意：此密码由服务端随机生成，且 Telegram 是该流程唯一的送达通道（重装时未提供 SSH 密钥），
+                    // 因此仍经 Telegram 发送一次，但包在 <tg-spoiler> 里，聊天记录里默认不直接可见；请立即保存。
                     String success = "✅ <b>【系统重装任务已成功派发】</b>\n\n"
                             + "🐧 <b>安装镜像</b>: <code>" + escapeHtml(imgName) + "</code>\n"
-                            + "🔑 <b>初始 root 密码</b>: <code>" + escapeHtml(randomPwd) + "</code>\n\n"
+                            + "🔑 <b>初始 root 密码</b>: <tg-spoiler><code>" + escapeHtml(randomPwd) + "</code></tg-spoiler>\n"
+                            + "⚠️ 该密码仅在此处显示一次，请立即保存。\n\n"
                             + "引导卷正在后台拉起开机，稍后请使用该密码建立连接。";
                     sendHtmlText(chatId, success);
                 } else {
