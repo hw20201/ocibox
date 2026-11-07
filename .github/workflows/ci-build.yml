@@ -1,0 +1,36 @@
+name: CI Build (security-fixes verification)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["security-fixes"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+      - name: Build with Maven
+        run: mvn -B clean package -DskipTests
+      - name: Checksums
+        run: |
+          cd target
+          sha256sum ocibox.jar | tee checksums.txt
+          ls -lh ocibox.jar
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocibox-jar
+          path: |
+            target/ocibox.jar
+            target/checksums.txt
+          retention-days: 7
